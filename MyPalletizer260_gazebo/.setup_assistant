@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  URDF:
+    package: ""
+    relative_path: /home/p/src/src/MyPalletizer260_gazebo/mypalletizer_260_m5.urdf
+    xacro_args: ""
+  SRDF:
+    relative_path: config/firefighter.srdf
+  CONFIG:
+    author_name: jiaweilong
+    author_email: 627892495@qq.com
+    generated_timestamp: 1759219524
