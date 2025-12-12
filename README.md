@@ -61,7 +61,7 @@ sudo chmod -R 777 /dev/ttyACM0  or sudo chmod -r 777 /dev/ttyUSB0
 sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/scripts/robot.py
 sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/robot1.py
 sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/scripts/robot2.py
-roscor
+roscore
 ```
 
 确认好端口后，打开一个终端输入以下命令，注意port改成上一步查询到的值
@@ -92,7 +92,7 @@ spin ...
 
 ```bash
 source devel/setup.bash
-roslaunch MyPalletizer260_gazebo follower.launch _port:=/dev/ttyACM0
+roslaunch MyPalletizer260_gazebo follow.launch _port:=/dev/ttyACM0
 ```
 
 如果程序运行成功，Gazebo界面将成功加载机械臂模型，机械臂模型的所有关节都处于原始位姿，即[0,0,0,0,0,0]. 此后我们打开第二个终端并运行：
