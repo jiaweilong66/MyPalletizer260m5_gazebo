@@ -32,6 +32,7 @@ pub_gripper = None
 CTRL_ARM_NAMES: List[str] = []     # 控制器期望的关节名（顺序固定）
 GRIPPER_NAME: str = "gripper_joint"
 ANGLE_INDEX_MAP: List[int] = []    # 控制器序 -> 硬件序 的索引映射
+JOINT_OFFSETS: List[float] = []    # 每个关节的角度偏移量（度）
 
 last_sent_deg = None
 _last_cmd_time = 0.0
@@ -377,8 +378,12 @@ def slider_cb(msg: JointState, cfg):
     last_sent_deg = ctrl_deg[:]
     _last_cmd_time = now
 
-    # Gazebo
-    send_arm_to_gazebo(ctrl_deg, CTRL_ARM_NAMES, cfg["arm_tfs"], cfg["arm_topic"])
+    # Gazebo：应用偏移量
+    ctrl_deg_with_offset = []
+    for k, deg in enumerate(ctrl_deg):
+        offset = JOINT_OFFSETS[k] if k < len(JOINT_OFFSETS) else 0.0
+        ctrl_deg_with_offset.append(deg + offset)
+    send_arm_to_gazebo(ctrl_deg_with_offset, CTRL_ARM_NAMES, cfg["arm_tfs"], cfg["arm_topic"])
 
 # =============== 初始化与主程序 ===============
 
@@ -419,6 +424,7 @@ def main():
     override_grip = rospy.get_param("~gripper_joint_name", "")
 
     angle_index_map_param = rospy.get_param("~angle_index_map", [])
+    joint_offsets_param = rospy.get_param("~joint_offsets", [])  # 新增：关节偏移量参数
 
     arm_tfs = float(rospy.get_param("~arm_time_from_start", 0.1))
     grip_tfs = float(rospy.get_param("~grip_time_from_start", 0.1))
@@ -465,9 +471,20 @@ def main():
 
     # 映射（控制器序 -> 硬件序）
     hw_len = len(hw_read_angles_deg() or [])
-    global ANGLE_INDEX_MAP
+    global ANGLE_INDEX_MAP, JOINT_OFFSETS
     ANGLE_INDEX_MAP = build_index_map(hw_len, angle_index_map_param)
     rospy.loginfo(f"[map] angle_index_map (ctrl->hw): {ANGLE_INDEX_MAP}")
+    
+    # 设置关节偏移量（默认第3关节 +20°）
+    if joint_offsets_param and isinstance(joint_offsets_param, list):
+        JOINT_OFFSETS = [float(x) for x in joint_offsets_param]
+    else:
+        # 默认：第3个关节（索引2）+20°
+        num_joints = len(CTRL_ARM_NAMES)
+        JOINT_OFFSETS = [0.0] * num_joints
+        if num_joints >= 3:
+            JOINT_OFFSETS[2] = -15.0  # 第3个关节（索引2，joint3_to_joint2）+20°
+    rospy.loginfo(f"[map] joint_offsets (degrees): {JOINT_OFFSETS}")
 
     if source.lower() == "slider":
         # 以滑块为主
@@ -504,7 +521,31 @@ def main():
                 idx_in_hw = ANGLE_INDEX_MAP[k] if k < len(ANGLE_INDEX_MAP) else k
                 val = deg_hw[idx_in_hw] if idx_in_hw < len(deg_hw) else 0.0
                 ctrl_deg.append(float(val))
-            send_arm_to_gazebo(ctrl_deg, CTRL_ARM_NAMES, arm_tfs, arm_topic)
+            
+            # 特殊处理：如果控制器中有 joint5_to_joint4，需要为缺失的 joint4_to_joint3 添加偏移
+            # 检查是否存在 joint5_to_joint4
+            if 'joint5_to_joint4' in CTRL_ARM_NAMES:
+                idx_joint5 = CTRL_ARM_NAMES.index('joint5_to_joint4')
+                # 为 joint4_to_joint3 添加偏移（它影响 joint5 的实际位置）
+                offset_joint4 = JOINT_OFFSETS[idx_joint5] if idx_joint5 < len(JOINT_OFFSETS) else 0.0
+                if offset_joint4 != 0.0:
+                    # joint5 的偏移量实际上应该应用到 joint4
+                    # 但由于 joint4 不在控制器列表中，我们需要通过其他方式处理
+                    pass
+            
+            # 应用关节偏移量
+            ctrl_deg_with_offset = []
+            for k, deg in enumerate(ctrl_deg):
+                offset = JOINT_OFFSETS[k] if k < len(JOINT_OFFSETS) else 0.0
+                ctrl_deg_with_offset.append(deg + offset)
+            
+            # 调试日志：每5秒打印一次
+            if int(time.time()) % 5 == 0:
+                rospy.loginfo(f"[debug] hw_angles: {[round(x,1) for x in deg_hw]}")
+                rospy.loginfo(f"[debug] ctrl_deg (with offset): {[round(x,1) for x in ctrl_deg_with_offset]}")
+                rospy.loginfo(f"[debug] JOINT_OFFSETS: {JOINT_OFFSETS}")
+            
+            send_arm_to_gazebo(ctrl_deg_with_offset, CTRL_ARM_NAMES, arm_tfs, arm_topic)
 
         g_hw = hw_read_gripper_deg()
         sim_g = map_gripper(g_hw, g_hw_min, g_hw_max, g_sim_min, g_sim_max, last_sim_grip)
