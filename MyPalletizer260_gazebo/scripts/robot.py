@@ -25,7 +25,7 @@ pub_gripper = None
 
 # 优化参数
 ANGLE_THRESHOLD = 3.0 # 角度变化阈值(度)
-GRIPPER_THRESHOLD = 10.0 # 夹爪角度变化阈值(度)
+GRIPPER_THRESHOLD = 0.001 # 夹爪角度变化阈值(弧度，改为实时响应)
 MAX_COMMAND_RATE = 10.0 # 最大命令频率(Hz)
 COMMAND_QUEUE_SIZE = 5 # 命令队列大小
 
@@ -38,14 +38,13 @@ DEFAULT_ARM_JOINTS = [
     "joint2_to_joint1",
     "joint3_to_joint2",
     "joint5_to_joint4",
-    "joint4_to_joint3",
 ]
 ARM_JOINTS = DEFAULT_ARM_JOINTS.copy()
 
 # 初始 JOINT_LIMITS 可先为空，连接后会按 NUM_JOINTS 填充
 JOINT_LIMITS = []
 GRIPPER_JOINT = "gripper_controller"
-GRIPPER_LIMITS = (-40, 40)
+GRIPPER_LIMITS = (-0.570, 0.128)  # 夹爪范围：-0.570（张开）到 0.128（闭合）
 
 # 状态记录
 last_angles = None
@@ -192,7 +191,7 @@ def check_angle_limits(angles, gripper_angle):
     if gripper_angle is not None and (gripper_angle < min_grip or gripper_angle > max_grip):
         gripper_key = "gripper"
         if gripper_key not in last_warning_time or current_time - last_warning_time[gripper_key] > WARNING_INTERVAL:
-            violations.append(f"夹爪: {gripper_angle:.1f}° (限制: {min_grip}°~{max_grip}°)")
+            violations.append(f"夹爪: {gripper_angle:.4f} (限制: {min_grip}~{max_grip})")
         last_warning_time[gripper_key] = current_time
         stats['limit_violations'] += 1
     if violations:
@@ -214,6 +213,26 @@ def clamp_angles(angles, gripper_angle):
     clamped_gripper = None
     if gripper_angle is not None:
         clamped_gripper = max(min_grip, min(max_grip, gripper_angle))
+    return clamped_angles, clamped_gripper
+
+def clamp_angles_with_gripper_rad(angles, gripper_rad):
+    """
+    专门用于模式1的夹紧函数，夹爪使用弧度值
+    """
+    clamped_angles = []
+    limits = JOINT_LIMITS if JOINT_LIMITS else [(-180, 180)] * len(angles)
+    for i, angle in enumerate(angles):
+        if i < len(limits):
+            min_limit, max_limit = limits[i]
+        else:
+            min_limit, max_limit = -180, 180
+        clamped_angles.append(max(min_limit, min(max_limit, angle)))
+    
+    # 夹爪限制（弧度）
+    min_grip, max_grip = GRIPPER_LIMITS
+    clamped_gripper = None
+    if gripper_rad is not None:
+        clamped_gripper = max(min_grip, min(max_grip, gripper_rad))
     return clamped_angles, clamped_gripper
 
 def calculate_angle_difference(angles1, angles2):
@@ -276,16 +295,37 @@ def command_executor():
                     last_angles = angles_to_send.copy()
                     rospy.logdebug(f"[slider_control] 发送角度: {angles_to_send}")
                 elif command.type == 'gripper':
-                    # 使用 set_gripper_state 释放夹爪
+                    # 实时连续控制夹爪开合大小
+                    gripper_value = command.data  # -0.570 到 0.128 的弧度值
                     try:
-                        mc.set_gripper_state(10, 80)  # 释放夹爪，参数10代表夹爪的状态
-                        rospy.logdebug(f"[slider_control] 夹爪释放")
+                        # 映射到硬件范围 3-91
+                        # -0.570 弧度 -> 3（张开）
+                        # 0.128 弧度 -> 91（闭合）
+                        t = (gripper_value - (-0.570)) / (0.128 - (-0.570))
+                        hw_gripper = 3.0 + t * (91.0 - 3.0)
+                        hw_gripper = max(3.0, min(91.0, hw_gripper))
+                        
+                        # 发送到真实机械臂
+                        if hasattr(mc, 'set_gripper_value'):
+                            mc.set_gripper_value(int(hw_gripper), 100)
+                        
+                        # 同时发布到 Gazebo（保持同步）
+                        traj_g = JointTrajectory()
+                        traj_g.header.stamp = rospy.Time.now()
+                        traj_g.joint_names = [GRIPPER_JOINT]
+                        ptg = JointTrajectoryPoint()
+                        ptg.positions = [gripper_value]  # 直接使用弧度值
+                        ptg.time_from_start = rospy.Duration(0.1)
+                        traj_g.points = [ptg]
+                        pub_gripper.publish(traj_g)
+                        
+                        rospy.logdebug(f"[slider_control] 夹爪设置为: {hw_gripper:.1f} (弧度: {gripper_value:.4f})")
+                        last_gripper_angle = gripper_value
                         stats['commands_sent'] += 1
+                        last_command_time = time.time()
                     except Exception as e:
-                        rospy.logwarn(f"[slider_control] 无法释放夹爪: {e}")
-                    last_gripper_angle = None
-                    stats['commands_sent'] += 1
-                    last_command_time = time.time()
+                        rospy.logwarn(f"[slider_control] 夹爪控制失败: {e}")
+                        stats['errors'] += 1
             except Exception as e:
                 rospy.logerr(f"[slider_control] 命令执行失败: {e}")
                 stats['errors'] += 1
@@ -303,21 +343,31 @@ def callback(msg: JointState):
     global stats, NUM_JOINTS, ARM_JOINTS, last_angles, last_gripper_angle
     stats['total_messages'] += 1
     name_to_deg = {}
+    name_to_rad = {}  # 新增：保存弧度值（用于夹爪）
+    
     for name, pos in zip(msg.name, msg.position):
         try:
+            # 保存弧度值
+            name_to_rad[name] = round(float(pos), 4)
+            # 转换为度（用于机械臂关节）
             name_to_deg[name] = round(math.degrees(pos), 1)
         except Exception:
             try:
                 name_to_deg[name] = round(float(pos), 1)
+                name_to_rad[name] = round(float(pos), 4)
             except Exception:
                 continue
+                
     if NUM_JOINTS is None:
-        candidates = [n for n in msg.name if n != GRIPPER_JOINT]
+        # 优先使用 DEFAULT_ARM_JOINTS 中存在的关节
         matched = [n for n in DEFAULT_ARM_JOINTS if n in name_to_deg]
         if matched:
             ARM_JOINTS = matched.copy()
             NUM_JOINTS = len(ARM_JOINTS)
+            rospy.loginfo(f"[slider_control] 推断到关节数: {NUM_JOINTS}, ARM_JOINTS: {ARM_JOINTS}")
         else:
+            # 如果没有匹配，使用所有非夹爪关节
+            candidates = [n for n in msg.name if n != GRIPPER_JOINT]
             take = min(len(candidates), 4) if len(candidates) > 0 else min(len(msg.name), 4)
             if take == 0:
                 ARM_JOINTS = DEFAULT_ARM_JOINTS[:4]
@@ -325,50 +375,80 @@ def callback(msg: JointState):
             else:
                 ARM_JOINTS = candidates[:take]
                 NUM_JOINTS = take
+            rospy.loginfo(f"[slider_control] 推断到关节数: {NUM_JOINTS}, ARM_JOINTS: {ARM_JOINTS}")
     JOINT_LIMITS.clear()
     JOINT_LIMITS.extend([(-180, 180)] * NUM_JOINTS)
-    rospy.loginfo(f"[slider_control] 推断到关节数: {NUM_JOINTS}, ARM_JOINTS: {ARM_JOINTS}")
     arm_deg = [0.0] * NUM_JOINTS
     for i, joint_name in enumerate(ARM_JOINTS):
         if joint_name in name_to_deg:
             arm_deg[i] = name_to_deg[joint_name]
-    grip_deg = name_to_deg.get(GRIPPER_JOINT, None)
-    check_angle_limits(arm_deg, grip_deg)
+    
+    # 夹爪使用弧度值，不是度
+    grip_rad = name_to_rad.get(GRIPPER_JOINT, None)
+    
+    # check_angle_limits 需要度值，所以临时转换
+    grip_deg_for_check = math.degrees(grip_rad) if grip_rad is not None else None
+    check_angle_limits(arm_deg, grip_deg_for_check)
+    
     if mode == 1:
-        clamped_arm, clamped_grip = clamp_angles(arm_deg, grip_deg)
-        publish_to_gazebo(clamped_arm, clamped_grip if clamped_grip is not None else 0.0)
+        clamped_arm, clamped_grip_rad = clamp_angles_with_gripper_rad(arm_deg, grip_rad)
+        rospy.loginfo_throttle(2.0, f"[slider_control] 模式1: 发送到Gazebo - 关节:{[round(a,1) for a in clamped_arm]}, 夹爪:{round(clamped_grip_rad if clamped_grip_rad is not None else 0.0, 3)}")
+        publish_to_gazebo(clamped_arm, clamped_grip_rad if clamped_grip_rad is not None else 0.0)
     elif mode == 2:
-        should_send, reason = should_send_command(arm_deg, grip_deg if grip_deg is not None else 0.0)
+        # 模式2使用弧度值
+        should_send, reason = should_send_command(arm_deg, grip_rad if grip_rad is not None else 0.0)
         if should_send:
-            clamped_arm, clamped_grip = clamp_angles(arm_deg, grip_deg if grip_deg is not None else 0.0)
+            clamped_arm, clamped_grip_rad = clamp_angles_with_gripper_rad(arm_deg, grip_rad if grip_rad is not None else 0.0)
             send_arm = clamped_arm[:NUM_JOINTS]
             arm_command = RobotCommand('angles', send_arm)
             if add_command_to_queue(arm_command):
-                gripper_diff = abs(clamped_grip - last_gripper_angle) if (last_gripper_angle is not None and clamped_grip is not None) else float('inf')
-                if clamped_grip is not None and gripper_diff >= GRIPPER_THRESHOLD:
-                    add_command_to_queue(RobotCommand('gripper', clamped_grip))
-                else:
-                    stats['commands_skipped'] += 1
+                stats['commands_sent'] += 1
             else:
                 stats['commands_skipped'] += 1
+        
+        # 独立处理夹爪控制（不依赖机械臂是否移动）
+        clamped_arm, clamped_grip_rad = clamp_angles_with_gripper_rad(arm_deg, grip_rad if grip_rad is not None else 0.0)
+        if clamped_grip_rad is not None:
+            gripper_diff = abs(clamped_grip_rad - last_gripper_angle) if last_gripper_angle is not None else float('inf')
+            if gripper_diff >= GRIPPER_THRESHOLD:
+                add_command_to_queue(RobotCommand('gripper', clamped_grip_rad))
+                rospy.logdebug(f"[slider_control] 发送夹爪命令: {clamped_grip_rad:.4f}")
+        
         rospy.logdebug(f"[slider_control] 跳过命令: {reason}")
 
-def publish_to_gazebo(arm_deg, grip_deg):
-    global pub_arm, pub_gripper
+def publish_to_gazebo(arm_deg, grip_rad):
+    """
+    发布到 Gazebo
+    arm_deg: 机械臂关节角度（度）
+    grip_rad: 夹爪角度（弧度）
+    """
+    global pub_arm, pub_gripper, ARM_JOINTS
+    
+    # 调试：打印即将发布的数据
+    rospy.loginfo_throttle(1.0, f"[publish_to_gazebo] 准备发布 - 关节名:{ARM_JOINTS}, 角度(度):{[round(d,1) for d in arm_deg]}, 夹爪(弧度):{round(grip_rad,4)}")
+    
     traj = JointTrajectory()
     traj.header.stamp = rospy.Time.now()
+    # 确保只发送 ARM_JOINTS 中的关节
     traj.joint_names = ARM_JOINTS[:len(arm_deg)]
     pt = JointTrajectoryPoint()
-    pt.positions = [math.radians(d) for d in arm_deg]
-    pt.time_from_start = rospy.Duration(0.1)
+    pt.positions = [math.radians(d) for d in arm_deg[:len(ARM_JOINTS)]]
+    pt.velocities = [0.0] * len(pt.positions)  # 添加速度
+    pt.accelerations = [0.0] * len(pt.positions)  # 添加加速度
+    pt.time_from_start = rospy.Duration(0.5)  # 增加执行时间到0.5秒
     traj.points = [pt]
+    
+    rospy.loginfo_throttle(1.0, f"[publish_to_gazebo] 发布机械臂轨迹 - 关节数:{len(traj.joint_names)}, 位置数:{len(pt.positions)}")
     pub_arm.publish(traj)
+    
     traj_g = JointTrajectory()
     traj_g.header.stamp = rospy.Time.now()
     traj_g.joint_names = [GRIPPER_JOINT]
     ptg = JointTrajectoryPoint()
-    ptg.positions = [math.radians(grip_deg)]
-    ptg.time_from_start = rospy.Duration(0.1)
+    ptg.positions = [grip_rad]  # 直接使用弧度值，不再转换
+    ptg.velocities = [0.0]  # 添加速度
+    ptg.accelerations = [0.0]  # 添加加速度
+    ptg.time_from_start = rospy.Duration(0.5)  # 增加执行时间到0.5秒
     traj_g.points = [ptg]
     pub_gripper.publish(traj_g)
 
@@ -463,6 +543,12 @@ def main():
     rospy.loginfo(f"[slider_control] 安全限制: 关节默认±180°, 夹爪{GRIPPER_LIMITS[0]}°~{GRIPPER_LIMITS[1]}°")
     pub_arm = rospy.Publisher("/arm_controller/command", JointTrajectory, queue_size=1)
     pub_gripper = rospy.Publisher("/gripper_controller/command", JointTrajectory, queue_size=1)
+    
+    # 等待发布器连接
+    rospy.loginfo("[slider_control] 等待控制器连接...")
+    rospy.sleep(1.0)
+    rospy.loginfo(f"[slider_control] 机械臂发布器订阅者数: {pub_arm.get_num_connections()}")
+    rospy.loginfo(f"[slider_control] 夹爪发布器订阅者数: {pub_gripper.get_num_connections()}")
     if mode == 2:
         if not initialize_mycobot():
             rospy.logerr("[slider_control] MyCobot初始化失败，退出")
