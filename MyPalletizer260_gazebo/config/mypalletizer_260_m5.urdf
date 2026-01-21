@@ -291,23 +291,21 @@
     </joint>
     <joint name="joint3_to_joint2" type="revolute">
         <axis xyz=" 0 0 1" />
-        <limit effort="1000.0" lower="-1.6057" upper="1.0471" velocity="1" />
+        <limit effort="1000.0" lower="-0.96" upper="0.96" velocity="1" />
         <parent link="link2" />
         <child link="link3" />
         <origin xyz="0.0 -0.14 0   " rpy="0 0 0 " />
         <dynamics damping="0.1" friction="0.1"/>
     </joint>
-    <joint name="joint4_to_joint3" type="revolute">
-        <axis xyz=" 0 0 1"/>
-        <limit effort = "1000.0" lower = "0" upper = "1.5707963" velocity = "1"/> 
+    <!-- joint4_to_joint3 已禁用 -->
+    <joint name="joint4_to_joint3_fixed" type="fixed">
         <parent link="link3" />
         <child link="link4" />
         <origin xyz="0.134 -0.005   0.0" rpy="3.1415926 0 0 " />
-        <dynamics damping="0.1" friction="0.1"/>
     </joint>
     <joint name="joint5_to_joint4" type="revolute">
         <axis xyz="0 0 1" />
-        <limit effort="1000.0" lower="-3.14" upper="3.14" velocity="1" />
+        <limit effort="1000.0" lower="-2.53" upper="2.53" velocity="1" />
         <parent link="link4" />
         <child link="link5" />
         <origin xyz=" 0.044 0 0" rpy="  1.5707963 0 0 " />
@@ -399,16 +397,6 @@
             <mechanicalReduction>1</mechanicalReduction>
         </actuator>
     </transmission>
-    <transmission name="trans_joint4_to_joint3">
-        <type>transmission_interface/SimpleTransmission</type>
-        <joint name="joint4_to_joint3">
-            <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-        </joint>
-        <actuator name="joint4_to_joint3_motor">
-            <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
-            <mechanicalReduction>1</mechanicalReduction>
-        </actuator>
-    </transmission>
     <transmission name="trans_joint5_to_joint4">
         <type>transmission_interface/SimpleTransmission</type>
         <joint name="joint5_to_joint4">
@@ -480,3 +468,4 @@
         <selfCollide>true</selfCollide>
     </gazebo>
 </robot>
+
