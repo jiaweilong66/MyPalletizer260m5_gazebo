@@ -45,12 +45,29 @@ MYCOBOT_GRIP_MAX = 91.0
 GAZEBO_GRIP_MIN = -0.68
 GAZEBO_GRIP_MAX = 0.15
 
-teleop_help = """\
-Teleop (lowercase)
-w/s e/d r/f t/g : joint1..4 ++/-- 
-o / p           : gripper open / close (反转：Gazebo o=开夹爪，p=关夹爪)
-1               : home (速度降低)
-q               : quit
+teleop_help = """
+╔══════════════════════════════════════════════════════════════╗
+║            MyPalletizer 260 键盘遥控                         ║
+╠══════════════════════════════════════════════════════════════╣
+║  关节控制 (小写字母)                                         ║
+║  ┌─────────┬─────────┬─────────┬─────────┐                   ║
+║  │ Joint 1 │ Joint 2 │ Joint 3 │ Joint 4 │                   ║
+║  │  底座   │  大臂   │  小臂   │  末端   │                   ║
+║  ├─────────┼─────────┼─────────┼─────────┤                   ║
+║  │  w / s  │  e / d  │  r / f  │  t / g  │                   ║
+║  │  +   -  │  +   -  │  +   -  │  +   -  │                   ║
+║  └─────────┴─────────┴─────────┴─────────┘                   ║
+║                                                              ║
+║  夹爪控制                                                    ║
+║  ┌─────────────────────────────┐                             ║
+║  │  o = 打开夹爪   p = 关闭夹爪│                             ║
+║  └─────────────────────────────┘                             ║
+║                                                              ║
+║  其他功能                                                    ║
+║  ┌─────────────────────────────┐                             ║
+║  │  1 = 回到Home    q = 退出   │                             ║
+║  └─────────────────────────────┘                             ║
+╚══════════════════════════════════════════════════════════════╝
 """
 
 # ============== 终端工具 ==============
@@ -196,17 +213,17 @@ def build_index_map(ctrl_len, opt_map):
     return base
 
 # ============== Gazebo 同步 ==============
-def publish_arm_to_gazebo(ctrl_deg_list):
+def publish_arm_to_gazebo(ctrl_deg_list, duration=0.1):
     """
     发布机械臂的角度到 Gazebo。
-    控制器顺序的角度（度）需要转换为 Gazebo 顺序。
+    duration: 轨迹执行时间（秒），默认0.1秒实现快速响应
     """
     traj = JointTrajectory()
     traj.header.stamp = rospy.Time.now()
-    traj.joint_names = CTRL_ARM_NAMES[:]  # 必须与控制器期望完全一致
+    traj.joint_names = CTRL_ARM_NAMES[:]
     pt = JointTrajectoryPoint()
-    pt.positions = [math.radians(a) for a in ctrl_deg_list]  # 转换为弧度
-    pt.time_from_start = rospy.Duration(0.5)  # 回到 Home 位置速度降低
+    pt.positions = [math.radians(a) for a in ctrl_deg_list]
+    pt.time_from_start = rospy.Duration(duration)
     traj.points = [pt]
     pub_arm_command.publish(traj)
 
@@ -240,20 +257,6 @@ def init_publishers():
     pub_gripper_command = rospy.Publisher(grip_topic, JointTrajectory, queue_size=10)
     pub_angles = rospy.Publisher("/joint_command_angles", Float64MultiArray, queue_size=1)
     rospy.loginfo(f"[ros] publishers ready: {arm_topic}, {grip_topic}")
-# ============== Gazebo 同步 ==============
-def publish_arm_to_gazebo(ctrl_deg_list):
-    """
-    发布机械臂的角度到 Gazebo。
-    控制器顺序的角度（度）需要转换为 Gazebo 顺序。
-    """
-    traj = JointTrajectory()
-    traj.header.stamp = rospy.Time.now()
-    traj.joint_names = CTRL_ARM_NAMES[:]  # 必须与控制器期望完全一致
-    pt = JointTrajectoryPoint()
-    pt.positions = [math.radians(a) for a in ctrl_deg_list]  # 转换为弧度
-    pt.time_from_start = rospy.Duration(2.5)  # 回到 Home 位置速度降低
-    traj.points = [pt]
-    pub_arm_command.publish(traj)
 
 # ============== 键盘执行（异步） ==============
 # ============== 键盘执行（异步） ==============
@@ -317,13 +320,73 @@ def add_command(cmd_type, data):
 
 
 # ============== 主键盘循环 ==============
+def clear_screen():
+    """清屏"""
+    print("\033[2J\033[H", end="")
+
+def print_status(deg_ctrl, hw_angles, gripper_state, joint_limits):
+    """打印当前状态面板"""
+    clear_screen()
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║            MyPalletizer 260 键盘遥控                         ║")
+    print("╠══════════════════════════════════════════════════════════════╣")
+    print("║  关节控制 (小写字母)                                         ║")
+    print("║  ┌─────────┬─────────┬─────────┬─────────┐                   ║")
+    print("║  │ Joint 1 │ Joint 2 │ Joint 3 │ Joint 4 │                   ║")
+    print("║  │  底座   │  大臂   │  小臂   │  末端   │                   ║")
+    print("║  ├─────────┼─────────┼─────────┼─────────┤                   ║")
+    print("║  │  w / s  │  e / d  │  r / f  │  t / g  │                   ║")
+    print("║  │  +   -  │  +   -  │  +   -  │  +   -  │                   ║")
+    print("║  └─────────┴─────────┴─────────┴─────────┘                   ║")
+    print("║                                                              ║")
+    print("║  目标角度 (Gazebo)                                           ║")
+    angles_str = "  ".join([f"J{i+1}:{deg_ctrl[i]:+7.1f}°" for i in range(len(deg_ctrl))])
+    print(f"║  {angles_str:<58} ║")
+    print("║                                                              ║")
+    print("║  实际角度 (硬件)                                             ║")
+    if hw_angles and len(hw_angles) >= len(deg_ctrl):
+        hw_str = "  ".join([f"J{i+1}:{hw_angles[i]:+7.1f}°" for i in range(len(deg_ctrl))])
+    else:
+        hw_str = "读取中..."
+    print(f"║  {hw_str:<58} ║")
+    print("║                                                              ║")
+    print("║  限位范围                                                    ║")
+    limits_str = "  ".join([f"[{joint_limits[i][0]:+4.0f},{joint_limits[i][1]:+4.0f}]" for i in range(min(len(joint_limits), len(deg_ctrl)))])
+    print(f"║  {limits_str:<58} ║")
+    print("║                                                              ║")
+    print("║  夹爪控制                                                    ║")
+    print("║  ┌─────────────────────────────────────────┐                 ║")
+    grip_status = "打开" if gripper_state == 0 else "关闭"
+    print(f"║  │  o = 打开    p = 关闭    当前: {grip_status:<6}  │                 ║")
+    print("║  └─────────────────────────────────────────┘                 ║")
+    print("║                                                              ║")
+    print("║  其他: 1 = Home    q = 退出                                  ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+
+def get_hw_angles():
+    """从硬件读取当前关节角度"""
+    try:
+        angles = mc.get_angles()
+        if isinstance(angles, (list, tuple)) and len(angles) >= 4:
+            return list(angles)
+    except Exception:
+        pass
+    return None
+
 def teleop():
-    print(teleop_help)
     step = float(rospy.get_param("~step_deg", 1.0))
-    jmin = float(rospy.get_param("~joint_min_deg", -180))
-    jmax = float(rospy.get_param("~joint_max_deg", 180))
+    refresh_interval = float(rospy.get_param("~refresh_interval", 0.5))  # 刷新间隔（秒）
+    
+    # 每个关节的独立限位（度），与实际硬件保持一致
+    joint_limits = [
+        (-162, 162),   # joint1_to_base
+        (-2, 90),      # joint2_to_joint1
+        (-55, 55),     # joint3_to_joint2 (实际硬件限位约±55°)
+        (-145, 145),   # joint5_to_joint4
+    ]
     # 角度数组（控制器顺序！）
     deg_ctrl = [0.0] * len(CTRL_ARM_NAMES)
+    gripper_state = 0  # 0=打开, 1=关闭
 
     t = threading.Thread(target=command_executor, daemon=True)
     t.start()
@@ -331,56 +394,64 @@ def teleop():
     keymap = {'w':(0,+1),'s':(0,-1),
               'e':(1,+1),'d':(1,-1),
               'r':(2,+1),'f':(2,-1),
-              't':(4,+1),'g':(4,-1)}  # 修改这里，t和g控制第五关节（关节4 -> 硬件的第五关节）
+              't':(3,+1),'g':(3,-1)}
+
+    last_refresh = 0.0
+    need_refresh = True
+    hw_angles = None
 
     with RawTerminal():
         while not rospy.is_shutdown():
+            # 定时刷新显示
+            now = time.time()
+            if need_refresh or (now - last_refresh >= refresh_interval):
+                hw_angles = get_hw_angles()  # 读取硬件角度
+                print_status(deg_ctrl, hw_angles, gripper_state, joint_limits)
+                last_refresh = now
+                need_refresh = False
+
             k = get_key_non_blocking()
             if k is None:
-                time.sleep(0.005)
+                time.sleep(0.01)
                 continue
 
             if k == 'q':
                 break
 
             elif k == '1':
-                # 返回Home位置
                 deg_ctrl = [0.0] * len(CTRL_ARM_NAMES)
                 add_command("angles", deg_ctrl)
-                rospy.loginfo("home")
+                need_refresh = True
                 continue
 
-            elif k in ('o', 'p'):  # 改进按键逻辑
-                action = 0 if k == 'o' else 1  # o=打开夹爪，p=关闭夹爪
-                # 直接设置目标值：硬件夹爪 3 (open) 或 91 (close)
+            elif k in ('o', 'p'):
+                action = 0 if k == 'o' else 1
                 gval = MYCOBOT_GRIP_MIN if action == 0 else MYCOBOT_GRIP_MAX
                 try:
-                    # 确保硬件夹爪同步
                     mc.set_gripper_state(action, 100)
-                    time.sleep(0.25)  # 硬件动作完成的短暂延时
+                    time.sleep(0.25)
                 except Exception as e:
-                    rospy.logwarn(f"[hw] 夹爪失败: {e}")
-                # 发布到 Gazebo
+                    pass
                 publish_gripper_to_gazebo(gval)
-                rospy.loginfo(f"Gazebo夹爪 {'打开' if action == 0 else '关闭'}")
+                gripper_state = action
+                need_refresh = True
                 continue
 
             elif k not in keymap:
                 continue
 
-            # 控制臂角度的逻辑
             idx, sgn = keymap[k]
             if idx >= len(deg_ctrl):
                 continue
 
+            jmin, jmax = joint_limits[idx] if idx < len(joint_limits) else (-180, 180)
             nv = deg_ctrl[idx] + sgn * step
             if nv < jmin or nv > jmax:
-                rospy.logwarn(f"joint{idx+1} 超限: {nv:.1f}°")
                 continue
 
             deg_ctrl[idx] = nv
             add_command("angles", deg_ctrl)
-            rospy.loginfo(f"joint{idx+1} -> {nv:.1f}°")
+            need_refresh = True
 
 
 # ============== 初始化入口 ==============
@@ -423,10 +494,11 @@ def main():
     # 发布器
     init_publishers()
 
-    print("\n已启动。若 Gazebo 仍不动，执行：")
-    print("  rosparam get /arm_controller/joints")
-    print("  rostopic echo -n1 /arm_controller/state | grep -A1 joint_names")
-    print("并把结果填进 ~arm_joint_names 或修正 URDF/controller 配置。")
+    # 启动信息（简短，因为teleop会显示完整面板）
+    print("\n" + "═" * 62)
+    print("  ✓ 硬件连接: {} @ {}".format(connected_port, connected_baud))
+    print("  ✓ 启动中...")
+    print("═" * 62)
 
     try:
         teleop()
@@ -437,7 +509,9 @@ def main():
             pass
         try: mc.close()
         except Exception: pass
-        rospy.loginfo("退出。")
+        print("\n" + "═" * 62)
+        print("  程序已退出，舵机已释放")
+        print("═" * 62 + "\n")
 
 if __name__ == "__main__":
     try:
