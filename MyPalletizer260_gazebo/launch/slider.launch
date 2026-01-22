@@ -37,3 +37,4 @@
     <include file="$(find MyPalletizer260_gazebo)/launch/ros_controllers.launch"/>
 </launch>
 
+
