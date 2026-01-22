@@ -57,9 +57,10 @@ ls /dev/tty*
 打开通信，给脚本添加执行权限
 
 ```bash
+cd src
 sudo chmod -R 777 /dev/ttyACM0  or sudo chmod -r 777 /dev/ttyUSB0
 sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/scripts/robot.py
-sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/robot1.py
+sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/scriptsrobot1.py
 sudo chmod -R 777 MyPalletizer260m5_gazebo/MyPalletizer260_gazebo/scripts/robot2.py
 roscore
 ```
@@ -128,9 +129,7 @@ Movimg options (control the angle of each joint):
 w: joint2_to_joint1++   s: joint2_to_joint1--
 e: joint3_to_joint2++   d: joint3_to_joint2--
 r: joint4_to_joint3++   f: joint4_to_joint3--
-t: joint5_to_joint4++   g: joint5_to_joint4--
-y: joint6_to_joint5++   h: joint6_to_joint5--
-u: joint6output_to_joint6++ j: joint6output_to_joint6--
+t: joint5_to_joint4++   g: joint5_to_joint4-- 
 o:open gripper          p:close gripper
 Other:
 1 - Go to home pose
