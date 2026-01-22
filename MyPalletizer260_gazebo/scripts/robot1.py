@@ -483,7 +483,7 @@ def main():
         num_joints = len(CTRL_ARM_NAMES)
         JOINT_OFFSETS = [0.0] * num_joints
         if num_joints >= 3:
-            JOINT_OFFSETS[2] = -15.0  # 第3个关节（索引2，joint3_to_joint2）+20°
+            JOINT_OFFSETS[2] = 0  # 第3个关节（索引2，joint3_to_joint2）+20°
     rospy.loginfo(f"[map] joint_offsets (degrees): {JOINT_OFFSETS}")
 
     if source.lower() == "slider":
